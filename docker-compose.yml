@@ -1,0 +1,47 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+
+    container_name: aic-backend
+
+    ports:
+      - "5000:5000"
+
+    volumes:
+      - ./backend:/app
+
+      # Prevent host virtual environment from
+      # overriding container Python environment
+      - /app/.venv
+
+    environment:
+      FLASK_ENV: development
+      PYTHONUNBUFFERED: "1"
+
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+
+    container_name: aic-frontend
+
+    ports:
+      - "5173:5173"
+
+    volumes:
+      - ./frontend:/app
+
+      # Keep node_modules inside container
+      - /app/node_modules
+
+    environment:
+      NODE_ENV: development
+
+    depends_on:
+      - backend
+
+    restart: unless-stopped
