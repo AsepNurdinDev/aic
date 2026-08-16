@@ -2,7 +2,7 @@
 
 > **AI-Powered Driver & Road Safety Analysis for Logistics Fleets**
 
-SafeRoute AI adalah prototipe sistem **AI keselamatan berkendara** yang dirancang untuk membantu pengemudi armada logistik mengenali situasi berkendara yang mulai berisiko sebelum berkembang menjadi kecelakaan.
+SafeRoute AI adalah prototipe sistem AI untuk meningkatkan keandalan dan efisiensi operasional armada logistik dengan mendeteksi peningkatan risiko selama proses pengiriman. Sistem menganalisis kondisi pengemudi dan lingkungan jalan secara bersamaan untuk mengidentifikasi situasi yang berpotensi menyebabkan kecelakaan, sehingga gangguan seperti kerusakan barang, keterlambatan pengiriman, dan downtime kendaraan dapat diminimalkan melalui peringatan dini kepada pengemudi.
 
 Sistem menganalisis video perjalanan dengan menggabungkan:
 
