@@ -177,8 +177,8 @@ return (
 
       <div className="upload-notes">
          <p className="notes-title">Notes:</p>
-         <p>*Video Driver is video showing the driver during the trip.</p>
-         <p>*Video Road is video showing road conditions during the trip.</p>
+         <p>*Video Driver is video showing the driver during the trip (required).</p>
+         <p>*Video Road is video showing road conditions during the trip (optional).</p>
       </div>
 
       <div className="upload-actions">
@@ -188,7 +188,7 @@ return (
          <button
          className="btn-upload"
          onClick={handleUploadClick}
-         disabled={!driverReady || !roadFile}
+         disabled={!driverReady}
          >
          Upload
          </button>
