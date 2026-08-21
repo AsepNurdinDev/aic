@@ -1,357 +1,304 @@
-"""
-backend/src/driver_analyzer.py
-
-Pipeline lengkap analisis frame pengemudi real-time:
-1. MediaPipe Tasks Face Landmarker
-2. Fitur EAR V3 + MAR
-3. Sliding Sequence Buffer (60 frame) + Z-score Normalization
-4. LandmarkGRU PyTorch Model Inference
-5. Temporal Prediction Smoother
-6. Head Pose Estimator (Nodding Pitch & Look-Aside Yaw)
-7. Skenario Fisiologis Realistis (Microsleep, Nodding, Looking Aside, Yawning, Drowsy GRU, Normal)
-8. Fatigue Timer Tracker & Alert Thresholds
-9. SafeRoute AI Risk Engine (LOW, POTENTIAL, WARNING, CRITICAL)
-"""
-
-import time
-import math
-from typing import Dict, Any, Optional, List, Tuple
 import cv2
+import math
+import time
+import os
 import numpy as np
+import torch
+import torch.nn as nn
+from collections import deque
+from typing import Dict, Any, Optional
 
-from src.config import (
-    MODEL_PATH,
-    CONFIG_PATH,
-    MEDIAPIPE_MODEL_PATH,
-    SEQUENCE_LENGTH,
-    THRESHOLD,
-    SMOOTHING_WINDOW,
-    DROWSY_ALERT_SECONDS,
-    NODDING_ALERT_SECONDS,
-    LOOK_ASIDE_ALERT_SECONDS,
-    MICROSLEEP_ALERT_SECONDS,
-    YAWN_ALERT_SECONDS,
-    EYE_CLOSED_EAR_THRESHOLD,
-    YAWN_MAR_THRESHOLD,
-    NODDING_PITCH_RATIO_THRESHOLD,
-    LOOK_ASIDE_YAW_THRESHOLD,
-    get_feature_stats,
-)
-from src.landmark_detector import FaceLandmarkDetector
-from src.feature_extractor import (
-    extract_features,
-    evaluate_head_pose,
-    LEFT_EYE,
-    RIGHT_EYE,
-    MOUTH,
-    LM_FOREHEAD,
-    LM_NOSE,
-    LM_CHIN,
-    LM_LEFT_CHEEK,
-    LM_RIGHT_CHEEK,
-)
-from src.preprocessing import SequenceBuffer, load_training_statistics
-from src.inference import DrowsinessInference
-from src.smoothing import PredictionSmoother
-from src.risk_engine import RiskEngine
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
+# ==============================================================================
+# CONFIG
+# ==============================================================================
+DROWSY_THRESHOLD = 0.70
+INFERENCE_HZ = 5.0
+DROWSY_ALARM_DURATION = 2.0
+YAWNING_ALARM_DURATION = 5.0
 
+# ==============================================================================
+# MODEL ARCHITECTURE (V5 - 36 Features)
+# ==============================================================================
+class DrowsinessModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv1d(36, 64, kernel_size=3, padding=1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(0.30),
+            nn.Conv1d(64, 64, kernel_size=3, padding=1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(0.30)
+        )
+        self.gru = nn.GRU(64, 128, num_layers=2, batch_first=True, bidirectional=True, dropout=0.30)
+        
+        self.attention = nn.ModuleDict({
+            'score': nn.Sequential(
+                nn.Linear(256, 256),
+                nn.Tanh(),
+                nn.Linear(256, 1)
+            )
+        })
+        
+        self.shared = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.30)
+        )
+        
+        self.binary_head = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.30),
+            nn.Linear(64, 2)
+        )
+        
+        self.class_head = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.30),
+            nn.Linear(64, 3)
+        )
+        
+    def forward(self, x):
+        x = x.transpose(1, 2)
+        x = self.cnn(x)
+        x = x.transpose(1, 2)
+        x, _ = self.gru(x)
+        
+        attn_weights = self.attention['score'](x)
+        attn_weights = torch.softmax(attn_weights, dim=1)
+        x = torch.sum(x * attn_weights, dim=1)
+        
+        x = self.shared(x)
+        bin_out = self.binary_head(x)
+        class_out = self.class_head(x)
+        return bin_out, class_out
+
+# ==============================================================================
+# DRIVER ANALYZER CORE
+# ==============================================================================
 class DriverAnalyzer:
-    """
-    Stateful Analyzer untuk memproses stream video pengemudi secara real-time.
-    """
-
-    def __init__(
-        self,
-        checkpoint_path: str = MODEL_PATH,
-        config_path: str = CONFIG_PATH,
-        mediapipe_model_path: str = MEDIAPIPE_MODEL_PATH,
-        device: str = "cpu"
-    ):
-        self.checkpoint_path = checkpoint_path
-        self.config_path = config_path
-        self.mediapipe_model_path = mediapipe_model_path
-        self.device = device
-
-        # 1. Detector
-        self.detector = FaceLandmarkDetector(model_path=mediapipe_model_path)
-
-        # 2. Model & Stats
-        self.engine = DrowsinessInference(
-            checkpoint_path=checkpoint_path,
-            config_path=config_path,
-            device=device,
-            default_threshold=THRESHOLD
+    def __init__(self, checkpoint_path, config_path=None, mediapipe_model_path=None, device="cpu"):
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.model = DrowsinessModel().to(self.device)
+        
+        # Load Model
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        except Exception:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model.eval()
+        
+        # Extrack Norm stats
+        self.mean = np.array(checkpoint['normalization_mean'], dtype=np.float32)
+        self.std = np.array(checkpoint['normalization_std'], dtype=np.float32)
+        
+        # Buffer
+        self.sequence_length = 16
+        self.base_buffer = deque(maxlen=self.sequence_length)
+        self.feature_buffer = deque(maxlen=self.sequence_length)
+        
+        # MediaPipe
+        base_options = python.BaseOptions(model_asset_path=mediapipe_model_path)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.VIDEO,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
+            min_tracking_confidence=0.5
         )
-
-        mean, std, seq_len = load_training_statistics(
-            checkpoint_path=checkpoint_path,
-            config_path=config_path
-        )
-        self.sequence_length = seq_len
-        self.buffer = SequenceBuffer(
-            sequence_length=seq_len,
-            feature_mean=mean,
-            feature_std=std
-        )
-
-        # 3. Smoother & Risk Engine
-        self.smoother = PredictionSmoother(
-            window_size=SMOOTHING_WINDOW,
-            threshold=THRESHOLD
-        )
-        self.risk_engine = RiskEngine()
-
-        # 4. Scenario State Tracking
-        self.fatigue_start_time: Optional[float] = None
-        self.last_active_time: float = 0.0
-        self.active_scenario_family: str = "NORMAL"
-        self.fatigue_duration: float = 0.0
-        self.frame_count: int = 0
-        self.start_time: float = time.time()
-
+        self.face_landmarker = vision.FaceLandmarker.create_from_options(options)
+        
+        # Landmarks
+        self.left_eye = [33, 160, 158, 133, 153, 144]
+        self.right_eye = [362, 385, 387, 263, 373, 380]
+        self.mouth = [61, 291, 13, 14]
+        self.nose = 1
+        
+        # State tracking
+        self.inference_interval = 1.0 / INFERENCE_HZ
+        self.last_inference_time = 0.0
+        self.last_prob = 0.0
+        self.last_state = "-"
+        self.last_status = "WAITING"
+        
+        # Durations
+        self.drowsy_start_time = None
+        self.drowsy_alarm_active = False
+        self.yawning_start_time = None
+        self.yawning_alarm_active = False
+        
     def reset(self):
-        """Reset buffer riwayat dan timer kantuk."""
-        self.buffer.clear()
-        self.smoother.reset()
-        self.fatigue_start_time = None
-        self.last_active_time = 0.0
-        self.active_scenario_family = "NORMAL"
-        self.fatigue_duration = 0.0
-        self.frame_count = 0
-        self.start_time = time.time()
+        self.base_buffer.clear()
+        self.feature_buffer.clear()
+        self.last_inference_time = 0.0
+        self.last_prob = 0.0
+        self.last_state = "-"
+        self.last_status = "WAITING"
+        self.drowsy_start_time = None
+        self.drowsy_alarm_active = False
+        self.yawning_start_time = None
+        self.yawning_alarm_active = False
 
-    def process_frame(
-        self,
-        frame_bgr: np.ndarray,
-        road_context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Analisis satu frame gambar OpenCV BGR dari kamera/video pengemudi.
-        """
-        t_start = time.time()
-        self.frame_count += 1
-        h, w = frame_bgr.shape[:2] if frame_bgr is not None else (480, 640)
+    def calculate_distance(self, p1, p2):
+        return np.linalg.norm(p1 - p2)
 
-        # 1. Deteksi Landmark Wajah
-        detection = self.detector.detect_face_landmarks(frame_bgr)
-        landmark_valid = detection["valid"]
-        landmarks = detection["landmarks"]
-        bbox = detection["bbox"]
+    def calculate_ear(self, points):
+        vertical_1 = self.calculate_distance(points[1], points[5])
+        vertical_2 = self.calculate_distance(points[2], points[4])
+        horizontal = self.calculate_distance(points[0], points[3])
+        if horizontal == 0: return 0
+        return (vertical_1 + vertical_2) / (2.0 * horizontal)
 
-        ear_val = 0.0
-        mar_val = 0.0
-        left_ear = 0.0
-        right_ear = 0.0
-        pitch_ratio = 1.0
-        yaw_ratio = 0.0
-        head_direction = "CENTER"
-        is_nodding = False
-        is_looking_aside = False
+    def extract_base_features(self, landmarks, w, h):
+        def get_pt(idx):
+            return np.array([landmarks[idx].x * w, landmarks[idx].y * h])
+            
+        le_pts = [get_pt(i) for i in self.left_eye]
+        re_pts = [get_pt(i) for i in self.right_eye]
+        
+        pt_33 = get_pt(33)
+        pt_263 = get_pt(263)
+        pt_1 = get_pt(1)
+        pt_61 = get_pt(61)
+        pt_291 = get_pt(291)
+        pt_13 = get_pt(13)
+        pt_14 = get_pt(14)
+        
+        ear_left = self.calculate_ear(le_pts)
+        ear_right = self.calculate_ear(re_pts)
+        ear_mean = (ear_left + ear_right) / 2.0
+        
+        eye_distance = self.calculate_distance(pt_33, pt_263)
+        if eye_distance < 1e-6: return None
+            
+        mouth_width_dist = self.calculate_distance(pt_61, pt_291)
+        mouth_height_dist = self.calculate_distance(pt_13, pt_14)
+        mouth_width = mouth_width_dist / eye_distance
+        mouth_height = mouth_height_dist / eye_distance
+        
+        safe_mouth_width = max(mouth_width, 1e-6)
+        mar = mouth_height / safe_mouth_width
+        
+        face_center = (pt_33 + pt_263) / 2.0
+        face_center_x = (pt_1[0] - face_center[0]) / eye_distance
+        face_center_y = (pt_1[1] - face_center[1]) / eye_distance
+        
+        eye_vector = pt_263 - pt_33
+        eye_center = (pt_33 + pt_263) / 2.0
+        head_x = (pt_1[0] - eye_center[0]) / eye_distance
+        head_y = (pt_1[1] - eye_center[1]) / eye_distance
+        
+        head_roll = math.degrees(math.atan2(eye_vector[1], eye_vector[0]))
+        if head_roll > 90: head_roll -= 180
+        elif head_roll < -90: head_roll += 180
+            
+        base_features = np.array([
+            ear_left, ear_right, ear_mean, mar, mouth_width, mouth_height,
+            eye_distance, face_center_x, face_center_y, head_x, head_y, head_roll
+        ], dtype=np.float32)
+        
+        if np.isnan(base_features).any() or np.isinf(base_features).any():
+            return None
+        return base_features, ear_mean, mar
 
-        raw_drowsy_prob: Optional[float] = None
-        smoothed_drowsy_prob: Optional[float] = None
-        pred_label = "NOT DROWSY"
-
-        status = "UNKNOWN (NO FACE)"
-        scenario_label = "NO FACE"
-        scenario_family = "NO_FACE"
-        current_target_alert_sec = DROWSY_ALERT_SECONDS
-        is_fatigue_active = False
-
-        # Landmarks keypoints untuk rendering frontend
-        key_landmarks: Dict[str, List[Dict[str, float]]] = {
-            "left_eye": [],
-            "right_eye": [],
-            "mouth": [],
-            "face_axes": []
-        }
-
-        if landmark_valid and landmarks is not None:
-            # Format normalized landmarks untuk frontend canvas
-            for idx in LEFT_EYE:
-                if idx < len(landmarks):
-                    key_landmarks["left_eye"].append({"x": landmarks[idx].x, "y": landmarks[idx].y})
-            for idx in RIGHT_EYE:
-                if idx < len(landmarks):
-                    key_landmarks["right_eye"].append({"x": landmarks[idx].x, "y": landmarks[idx].y})
-            for idx in MOUTH:
-                if idx < len(landmarks):
-                    key_landmarks["mouth"].append({"x": landmarks[idx].x, "y": landmarks[idx].y})
-            for idx in [LM_FOREHEAD, LM_NOSE, LM_CHIN, LM_LEFT_CHEEK, LM_RIGHT_CHEEK]:
-                if idx < len(landmarks):
-                    key_landmarks["face_axes"].append({"x": landmarks[idx].x, "y": landmarks[idx].y})
-
-            # 2. Ekstraksi Fitur EAR V3 & MAR
-            features = extract_features(landmarks)
-            if features["valid"]:
-                ear_val = float(features["ear"])
-                mar_val = float(features["mar"])
-                left_ear = float(features.get("left_ear", 0.0))
-                right_ear = float(features.get("right_ear", 0.0))
-
-                # 3. Buffer sequence
-                self.buffer.append([ear_val, mar_val])
-
-                if self.buffer.is_ready():
-                    # 4. Inferensi Model GRU
-                    pred_result = self.engine.predict(self.buffer, threshold=THRESHOLD)
-                    raw_drowsy_prob = float(pred_result["drowsy_probability"])
-
-                    # 5. Temporal Smoothing
-                    smooth_result = self.smoother.update(raw_drowsy_prob, threshold=THRESHOLD)
-                    smoothed_drowsy_prob = float(smooth_result["smoothed_probability"])
-                    pred_label = smooth_result["label"]
-
-                    # 6. Evaluasi Head Pose
-                    is_nodding, is_looking_aside, pitch_ratio, yaw_ratio, head_direction = evaluate_head_pose(
-                        landmarks=landmarks,
-                        nodding_ratio_threshold=NODDING_PITCH_RATIO_THRESHOLD,
-                        yaw_ratio_threshold=LOOK_ASIDE_YAW_THRESHOLD,
-                        ear_val=ear_val,
-                        smoothed_drowsy_prob=smoothed_drowsy_prob
-                    )
-
-                    # 7. Skenario Fisiologis
-                    is_eye_closed = (ear_val < EYE_CLOSED_EAR_THRESHOLD)
-                    is_yawning = (mar_val >= YAWN_MAR_THRESHOLD)
-
-                    if is_eye_closed:
-                        scenario_family = "MICROSLEEP"
-                        status = "MICROSLEEP (CRITICAL)"
-                        scenario_label = "MICROSLEEP"
-                        current_target_alert_sec = MICROSLEEP_ALERT_SECONDS
-                        is_fatigue_active = True
-
-                    elif is_nodding:
-                        scenario_family = "NODDING"
-                        status = "NODDING (DROWSY)"
-                        scenario_label = "NODDING"
-                        current_target_alert_sec = NODDING_ALERT_SECONDS
-                        is_fatigue_active = True
-
-                    elif is_looking_aside:
-                        scenario_family = "LOOK_ASIDE"
-                        status = f"LOOKING {head_direction} (DISTRACTED)"
-                        scenario_label = f"LOOKING {head_direction}"
-                        current_target_alert_sec = LOOK_ASIDE_ALERT_SECONDS
-                        is_fatigue_active = True
-
-                    elif is_yawning and not is_eye_closed and (smoothed_drowsy_prob < THRESHOLD or ear_val >= 0.23):
-                        scenario_family = "YAWNING"
-                        status = "YAWNING (WARNING)"
-                        scenario_label = "YAWNING"
-                        current_target_alert_sec = YAWN_ALERT_SECONDS
-                        is_fatigue_active = True
-
-                    elif pred_label == "DROWSY":
-                        scenario_family = "DROWSY"
-                        status = "DROWSY"
-                        scenario_label = "DROWSY (GRU)"
-                        current_target_alert_sec = DROWSY_ALERT_SECONDS
-                        is_fatigue_active = True
-
+    def process_frame(self, frame_bgr: np.ndarray, road_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        timestamp_ms = int(time.monotonic() * 1000)
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        
+        results = self.face_landmarker.detect_for_video(mp_image, timestamp_ms)
+        h, w, _ = frame_bgr.shape
+        
+        if not results.face_landmarks:
+            self.drowsy_start_time = None
+            self.yawning_start_time = None
+            self.drowsy_alarm_active = False
+            self.yawning_alarm_active = False
+            return self._build_response("UNKNOWN", "NO FACE", 0, 0, 0.0, 0.0)
+            
+        face_landmarks = results.face_landmarks[0]
+        
+        extracted = self.extract_base_features(face_landmarks, w, h)
+        if extracted is None:
+            return self._build_response("UNKNOWN", "INVALID FEATURES", 0, 0, 0.0, 0.0)
+            
+        base_features, ear_val, mar_val = extracted
+        self.base_buffer.append(base_features)
+        
+        if len(self.base_buffer) >= 1:
+            base_t = self.base_buffer[-1]
+            delta_t = base_t - self.base_buffer[-2] if len(self.base_buffer) >= 2 else np.zeros_like(base_t)
+            delta2_t = delta_t - (self.base_buffer[-2] - self.base_buffer[-3]) if len(self.base_buffer) >= 3 else np.zeros_like(base_t)
+            
+            final_vector = np.concatenate([base_t, delta_t, delta2_t])
+            self.feature_buffer.append(final_vector)
+            
+        current_time = time.monotonic()
+        
+        if len(self.feature_buffer) == self.sequence_length:
+            if current_time - self.last_inference_time >= self.inference_interval:
+                self.last_inference_time = current_time
+                
+                features = np.array(self.feature_buffer)
+                features = (features - self.mean) / self.std
+                x = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
+                
+                with torch.no_grad():
+                    bin_out, class_out = self.model(x)
+                    bin_probs = torch.softmax(bin_out, dim=1)[0]
+                    state_idx = torch.argmax(class_out, dim=1).item()
+                    states = ["ALERT", "MICROSLEEP", "YAWNING"]
+                    
+                    self.last_prob = bin_probs[1].item()
+                    self.last_state = states[state_idx]
+                    
+                    if self.last_prob >= DROWSY_THRESHOLD:
+                        self.last_status = "DROWSY"
                     else:
-                        scenario_family = "NORMAL"
-                        status = "NOT DROWSY"
-                        scenario_label = "ALERT / NORMAL"
-                        current_target_alert_sec = DROWSY_ALERT_SECONDS
-                        is_fatigue_active = False
+                        self.last_status = "NOT DROWSY"
 
-                else:
-                    status = f"BUFFERING ({len(self.buffer)}/{self.sequence_length})"
-                    scenario_label = "INITIALIZING"
-                    scenario_family = "BUFFERING"
-                    is_fatigue_active = False
-            else:
-                status = "UNKNOWN (INVALID FEAT)"
-                scenario_label = "INVALID FEAT"
-                scenario_family = "NO_FACE"
-                is_fatigue_active = False
+        # Update Alarm Policy
+        if self.last_status == "DROWSY":
+            if self.drowsy_start_time is None: self.drowsy_start_time = current_time
+            if (current_time - self.drowsy_start_time) >= DROWSY_ALARM_DURATION:
+                self.drowsy_alarm_active = True
         else:
-            status = "UNKNOWN (NO FACE)"
-            scenario_label = "NO FACE"
-            scenario_family = "NO_FACE"
-            is_fatigue_active = False
-
-        # 8. Pelacakan Durasi Alarm Kantuk
-        curr_time = time.time()
-        alarm_active = False
-
-        if is_fatigue_active:
-            if self.fatigue_start_time is None or self.active_scenario_family != scenario_family:
-                self.fatigue_start_time = curr_time
-                self.active_scenario_family = scenario_family
-
-            self.fatigue_duration = curr_time - self.fatigue_start_time
-            self.last_active_time = curr_time
-
-            if self.fatigue_duration >= current_target_alert_sec:
-                alarm_active = True
+            self.drowsy_start_time = None
+            self.drowsy_alarm_active = False
+            
+        if self.last_state == "YAWNING":
+            if self.yawning_start_time is None: self.yawning_start_time = current_time
+            if (current_time - self.yawning_start_time) >= YAWNING_ALARM_DURATION:
+                self.yawning_alarm_active = True
         else:
-            if curr_time - self.last_active_time > 0.35:
-                self.fatigue_start_time = None
-                self.fatigue_duration = 0.0
-                self.active_scenario_family = "NORMAL"
-                alarm_active = False
+            self.yawning_start_time = None
+            self.yawning_alarm_active = False
 
-        # 9. Evaluasi Risk Engine SafeRoute AI
-        risk_result = self.risk_engine.evaluate_risk(
-            scenario=scenario_family,
-            fatigue_duration=self.fatigue_duration,
-            target_alert_sec=current_target_alert_sec,
-            alarm_active=alarm_active,
-            smoothed_drowsy_prob=smoothed_drowsy_prob,
-            is_nodding=is_nodding,
-            is_looking_aside=is_looking_aside,
-            head_direction=head_direction,
-            ear=ear_val,
-            mar=mar_val,
-            road_context=road_context
-        )
+        alarm_active = self.drowsy_alarm_active or self.yawning_alarm_active
+        risk_level = "CRITICAL" if self.drowsy_alarm_active else ("WARNING" if self.yawning_alarm_active else "LOW")
+        risk_score = 100 if self.drowsy_alarm_active else (75 if self.yawning_alarm_active else int(self.last_prob * 100))
+        
+        return self._build_response(self.last_status, self.last_state, risk_level, risk_score, ear_val, mar_val, alarm_active)
 
-        latency_ms = (time.time() - t_start) * 1000.0
-
-        # Normalisasi bounding box untuk frontend [x, y, w, h] (0.0 to 1.0)
-        norm_bbox = None
-        if bbox and w > 0 and h > 0:
-            norm_bbox = {
-                "x": bbox[0] / w,
-                "y": bbox[1] / h,
-                "w": bbox[2] / w,
-                "h": bbox[3] / h,
-                "px": bbox[0],
-                "py": bbox[1],
-                "pw": bbox[2],
-                "ph": bbox[3]
-            }
-
+    def _build_response(self, status, scenario, risk_level, risk_score, ear, mar, alarm=False):
         return {
-            "face_detected": landmark_valid,
-            "bbox": norm_bbox,
-            "key_landmarks": key_landmarks,
-            "ear": round(ear_val, 4),
-            "mar": round(mar_val, 4),
-            "left_ear": round(left_ear, 4),
-            "right_ear": round(right_ear, 4),
-            "pitch_ratio": round(pitch_ratio, 3),
-            "yaw_ratio": round(yaw_ratio, 3),
-            "head_direction": head_direction,
-            "is_nodding": is_nodding,
-            "is_looking_aside": is_looking_aside,
-            "raw_drowsy_prob": round(raw_drowsy_prob, 4) if raw_drowsy_prob is not None else None,
-            "smoothed_drowsy_prob": round(smoothed_drowsy_prob, 4) if smoothed_drowsy_prob is not None else None,
             "status": status,
-            "scenario": scenario_family,
-            "scenario_label": scenario_label,
-            "fatigue_duration": round(self.fatigue_duration, 2),
-            "target_alert_sec": round(current_target_alert_sec, 2),
-            "alarm_active": alarm_active,
-            "buffer_len": len(self.buffer),
-            "buffer_max": self.sequence_length,
-            "latency_ms": round(latency_ms, 1),
-            "risk_level": risk_result["risk_level"],
-            "risk_score": risk_result["risk_score"],
-            "risk_reasons": risk_result["risk_reasons"],
-            "alert_message": risk_result["alert_message"]
+            "scenario": scenario,
+            "risk_level": risk_level,
+            "risk_score": risk_score,
+            "ear": round(ear, 3),
+            "mar": round(mar, 3),
+            "alarm_active": alarm,
+            "raw_prob": round(self.last_prob, 3)
         }
