@@ -1,24 +1,25 @@
 /**
- * SafeRoute AI — Voice Alert Service
- * Uses Web Speech Synthesis API for Indonesian TTS.
- * State-transition anti-spam: only plays when action changes or cooldown expires.
+ * SafeRoute AI — Local Audio & Voice Alert Service
+ * Memutar file audio lokal (.mp3) berdasarkan action yang dideteksi.
  */
 
 class VoiceAlertService {
   private lastAction: string = 'NONE';
   private lastPlayTime: number = 0;
   private cooldownMs: number = 6000;
-  private isSpeaking: boolean = false;
-  private synthesis: SpeechSynthesis | null = null;
+  private currentAudio: HTMLAudioElement | null = null;
 
-  constructor() {
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
-      this.synthesis = window.speechSynthesis;
-    }
-  }
+  // Mapping action backend ke file audio lokal di folder /public/audio/
+  private audioMap: Record<string, string> = {
+    'DROWSINESS_WARNING': '/audio/drowsiness.mp3',
+    'DISTRACTION_WARNING': '/audio/distraction.mp3',
+    'ROAD_WARNING': '/audio/road_warning.mp3',
+    'URGENT_WARNING': '/audio/urgent.mp3',
+    'DEGRADED_WARNING': '/audio/warning.mp3',
+  };
 
   /**
-   * Process an inference response and play voice if needed.
+   * Proses respon inferensi dan putar audio lokal.
    * Returns true if voice was played.
    */
   processResponse(warningMessage: string | null, action: string): boolean {
@@ -32,7 +33,7 @@ class VoiceAlertService {
     const cooldownExpired = (now - this.lastPlayTime) > this.cooldownMs;
 
     if (actionChanged || cooldownExpired) {
-      this.speak(warningMessage);
+      this.playLocalAudio(action, warningMessage);
       this.lastAction = action;
       this.lastPlayTime = now;
       return true;
@@ -42,43 +43,50 @@ class VoiceAlertService {
   }
 
   /**
-   * Speak a message using Web Speech Synthesis.
+   * Putar file MP3 lokal. Jika file tidak ada, fallback ke Web Speech API.
    */
-  private speak(text: string): void {
-    if (!this.synthesis) return;
+  private playLocalAudio(action: string, fallbackText: string): void {
+    // Hentikan audio yang sedang berputar jika ada
+    this.stop();
 
-    // Cancel any ongoing speech
-    if (this.isSpeaking) {
-      this.synthesis.cancel();
+    const audioSrc = this.audioMap[action];
+
+    if (audioSrc) {
+      const audio = new Audio(audioSrc);
+      this.currentAudio = audio;
+
+      audio.play().catch((err) => {
+        console.warn(`[VoiceAlert] Gagal memutar audio lokal (${audioSrc}), fallback ke TTS:`, err);
+        this.speakFallback(fallbackText);
+      });
+    } else {
+      this.speakFallback(fallbackText);
     }
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'id-ID';
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.volume = 1.0;
-
-    // Try to find an Indonesian voice
-    const voices = this.synthesis.getVoices();
-    const idVoice = voices.find(v => v.lang.startsWith('id'));
-    if (idVoice) {
-      utterance.voice = idVoice;
-    }
-
-    utterance.onstart = () => { this.isSpeaking = true; };
-    utterance.onend = () => { this.isSpeaking = false; };
-    utterance.onerror = () => { this.isSpeaking = false; };
-
-    this.synthesis.speak(utterance);
   }
 
   /**
-   * Stop any ongoing speech.
+   * Fallback Web Speech Synthesis jika file audio belum tersedia
+   */
+  private speakFallback(text: string): void {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'id-ID';
+    window.speechSynthesis.speak(utterance);
+  }
+
+  /**
+   * Hentikan audio yang sedang diputar.
    */
   stop(): void {
-    if (this.synthesis) {
-      this.synthesis.cancel();
-      this.isSpeaking = false;
+    if (this.currentAudio) {
+      this.currentAudio.pause();
+      this.currentAudio.currentTime = 0;
+      this.currentAudio = null;
+    }
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
     }
     this.lastAction = 'NONE';
   }
@@ -87,8 +95,9 @@ class VoiceAlertService {
    * Get current speaking state info for UI indicator.
    */
   getState(): { isSpeaking: boolean; lastAction: string } {
+    const isSpeaking = this.currentAudio !== null ? !this.currentAudio.paused : false;
     return {
-      isSpeaking: this.isSpeaking,
+      isSpeaking: isSpeaking,
       lastAction: this.lastAction,
     };
   }
