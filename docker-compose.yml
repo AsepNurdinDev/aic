@@ -7,7 +7,7 @@ services:
     container_name: aic-backend
 
     ports:
-      - "5000:5000"
+      - "8000:8000"
 
     volumes:
       - ./backend:/app
@@ -17,7 +17,6 @@ services:
       - /app/.venv
 
     environment:
-      FLASK_ENV: development
       PYTHONUNBUFFERED: "1"
 
     restart: unless-stopped

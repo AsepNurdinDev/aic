@@ -37,42 +37,91 @@ def run_smoke_test():
     print("\nPolicy:")
     print(f"{'FULL/DEGRADED'.ljust(18)} {'OK' if pipeline.safety_policy else 'FAILED'}")
     
-    # 2. Create dummy frame for testing
+    # 2. Test single-frame inference (process_frame)
     dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
     
     try:
-        # 3-7. Run full pipeline
         decision = pipeline.process_frame(dummy_frame)
         
-        # 8. Print structured decision
-        print("\nFinal decision:")
+        print("\n--- Test 1: Single frame inference ---")
         print(f"MODE: {decision.get('decision_mode')}")
         
         events_str = ", ".join([e for e, info in decision.get("events", {}).items() if info.get("active")])
         print(f"EVENTS: {events_str if events_str else 'NONE'}")
         print(f"SEVERITY: {decision.get('severity')}")
         print(f"ACTION: {decision.get('action')}")
+        print(f"WARNING: {decision.get('warning_message')}")
         
-        # 9 & 10. Verify no NaN/Inf
+        # Verify no NaN/Inf
         for event, info in decision.get("events", {}).items():
             prob = info.get("probability", 0.0)
             if np.isnan(prob) or np.isinf(prob):
                 raise ValueError(f"Non-finite probability in {event}: {prob}")
                 
-        # 12 & 13. Verify logic (e.g. DEGRADED mode if 0 events -> DEGRADED_WARNING, never SAFE)
+        # DEGRADED mode with 0 events must NOT produce SAFE
         if decision.get("decision_mode") == "DEGRADED" and decision.get("observed_event_count", 0) == 0:
             if decision.get("severity") == "SAFE" or decision.get("action") == "NONE":
                 raise ValueError("DEGRADED mode with 0 events produced SAFE/NONE instead of DEGRADED_WARNING")
                 
-        # (This is just one frame, so temporal won't trigger active for events with EVENT_CONFIRM_FRAMES > 1)
-                
-        print("\nSmoke test PASSED \u2705")
+        print("Single frame: PASSED ✅")
         
     except Exception as e:
-        print(f"\nSmoke test FAILED \u274c : {e}")
+        print(f"\nSingle frame test FAILED ❌ : {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
+    
+    # 3. Test 3-channel inference (process_channels)
+    try:
+        print("\n--- Test 2: 3-channel inference ---")
+        driver_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        road_frame = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+        cabin_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        decision = pipeline.process_channels(driver_frame, road_frame, cabin_frame)
+        print(f"MODE: {decision.get('decision_mode')}")
+        print(f"SEVERITY: {decision.get('severity')}")
+        print(f"ACTION: {decision.get('action')}")
+        print(f"WARNING: {decision.get('warning_message')}")
+        print("3-channel: PASSED ✅")
+        
+    except Exception as e:
+        print(f"\n3-channel test FAILED ❌ : {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    
+    # 4. Test partial modality (driver only, no road)
+    try:
+        print("\n--- Test 3: Partial modality (driver only) ---")
+        decision = pipeline.process_channels(driver_frame, None, None)
+        print(f"MODE: {decision.get('decision_mode')}")
+        print(f"SEVERITY: {decision.get('severity')}")
+        print(f"ACTION: {decision.get('action')}")
+        
+        if decision.get("decision_mode") != "DEGRADED":
+            raise ValueError(f"Expected DEGRADED mode when road is missing, got {decision.get('decision_mode')}")
+        
+        print("Partial modality: PASSED ✅")
+        
+    except Exception as e:
+        print(f"\nPartial modality test FAILED ❌ : {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    
+    # 5. Test warning_message is included in response
+    try:
+        print("\n--- Test 4: Warning message field ---")
+        assert "warning_message" in decision, "warning_message field missing from decision"
+        print("Warning field: PASSED ✅")
+    except Exception as e:
+        print(f"\nWarning field test FAILED ❌ : {e}")
+        sys.exit(1)
+        
+    print("\n==================================================")
+    print("ALL SMOKE TESTS PASSED ✅")
+    print("==================================================")
 
 if __name__ == "__main__":
     run_smoke_test()
