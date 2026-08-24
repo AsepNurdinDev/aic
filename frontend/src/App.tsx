@@ -1,10 +1,7 @@
-import React from 'react'
-import { Dashboard } from './pages/Dashboard'
+import { MonitorPage } from './pages/MonitorPage'
 
 function App() {
-  return (
-    <Dashboard />
-  )
+  return <MonitorPage />
 }
 
 export default App
