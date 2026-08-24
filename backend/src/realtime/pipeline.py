@@ -13,7 +13,6 @@ from src.decision.safety_policy import SafetyPolicy
 from src.realtime.smoothing import DecisionSmoother
 from src.realtime.warning_manager import WarningManager
 
-from src.utils.logger import CsvLogger
 from src.utils.config import *
 
 class RealtimePipeline:
@@ -25,68 +24,123 @@ class RealtimePipeline:
         # Load Drowsiness Model
         try:
             self.drowsiness_processor = DrowsinessProcessor(DROWSINESS_MODEL_PATH, LANDMARKER_PATH)
-            print("FL3D:\nLOADED\n")
+            print("Drowsiness model: READY")
         except Exception as e:
-            print(f"FL3D:\nFAILED ({e})\n")
+            print(f"Drowsiness model: FAILED ({e})")
             self.drowsiness_processor = None
             
         # Load State Farm Model
         try:
             self.statefarm_processor = StateFarmProcessor(STATEFARM_MODEL_PATH)
-            print("State Farm:\nLOADED\n")
+            print("State Farm model: READY")
         except Exception as e:
-            print(f"State Farm:\nFAILED ({e})\n")
+            print(f"State Farm model: FAILED ({e})")
             self.statefarm_processor = None
             
         # Load Road Object Model
         try:
             self.road_object_processor = RoadObjectProcessor(ROAD_OBJECT_MODEL_PATH)
-            print("Road Object:\nLOADED\n")
+            print("Road object model: READY")
         except Exception as e:
-            print(f"Road Object:\nFAILED ({e})\n")
+            print(f"Road object model: FAILED ({e})")
             self.road_object_processor = None
             
         # Load Road Geometry Model
         try:
             self.road_geometry_processor = RoadGeometryProcessor(ROAD_GEOMETRY_MODEL_PATH)
-            print("Road Geometry:\nLOADED\n")
+            print("Road geometry model: READY")
         except Exception as e:
-            print(f"Road Geometry:\nFAILED ({e})\n")
+            print(f"Road geometry model: FAILED ({e})")
             self.road_geometry_processor = None
 
         # Load Decision AI
         try:
             self.decision_engine = DecisionEngine(DECISION_MODELS_DIR, SCHEMA_PATH)
-            print("Decision:")
-            for event in ["DROWSINESS", "PHONE", "TEXTING", "DRINKING", "RADIO", "REACHING", "PASSENGER", "ROAD"]:
-                print(f"{event} LOADED")
-            print("\nThresholds:\nLOADED\n")
+            print("Decision AI: READY")
         except Exception as e:
-            print(f"Decision System:\nFAILED ({e})\n")
+            print(f"Decision AI: FAILED ({e})")
             self.decision_engine = None
             
         self.safety_policy = SafetyPolicy()
-        print("Policy:\nLOADED\n")
-        print("==================================================\n")
         
         self.smoother = DecisionSmoother(confirm_frames=EVENT_CONFIRM_FRAMES, clear_frames=EVENT_CLEAR_FRAMES)
         self.warning_manager = WarningManager(cooldown_sec=WARNING_COOLDOWN_SEC)
-        self.logger = CsvLogger(enabled=ENABLE_LOGGING)
         
         self.last_time = time.time()
+        print("==================================================\n")
         
     def process_frame(self, frame_bgr: np.ndarray) -> dict:
-        current_time = time.time()
-        fps = 1.0 / (current_time - self.last_time) if (current_time - self.last_time) > 0 else 0.0
-        self.last_time = current_time
-        
+        """Process a single frame through all perception models.
+        Used when all cameras share the same frame (legacy/fallback)."""
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        return self._run_inference(
+            driver_rgb=frame_rgb,
+            road_rgb=frame_rgb,
+            cabin_rgb=None
+        )
+    
+    def process_channels(self, 
+                         driver_frame: np.ndarray | None = None, 
+                         road_frame: np.ndarray | None = None, 
+                         cabin_frame: np.ndarray | None = None) -> dict:
+        """Process separate frames from different camera channels.
         
-        # Perception
-        drowsiness_res = self.drowsiness_processor.process(frame_rgb) if self.drowsiness_processor else {"drowsiness_available": 0}
-        statefarm_res = self.statefarm_processor.process(frame_rgb) if self.statefarm_processor else {"statefarm_available": 0}
-        road_obj_res = self.road_object_processor.process(frame_rgb) if self.road_object_processor else {"road_available": 0}
-        road_geom_res = self.road_geometry_processor.process(frame_rgb) if self.road_geometry_processor else {"geometry_available": 0}
+        Args:
+            driver_frame: BGR frame from driver camera (for drowsiness + statefarm)
+            road_frame: BGR frame from road camera (for road_object + road_geometry)
+            cabin_frame: BGR frame from cabin camera (reserved for future)
+            
+        Returns:
+            Decision dict with warning_message included.
+        """
+        driver_rgb = cv2.cvtColor(driver_frame, cv2.COLOR_BGR2RGB) if driver_frame is not None else None
+        road_rgb = cv2.cvtColor(road_frame, cv2.COLOR_BGR2RGB) if road_frame is not None else None
+        cabin_rgb = cv2.cvtColor(cabin_frame, cv2.COLOR_BGR2RGB) if cabin_frame is not None else None
+        
+        return self._run_inference(driver_rgb, road_rgb, cabin_rgb)
+    
+    def _run_inference(self, 
+                       driver_rgb: np.ndarray | None, 
+                       road_rgb: np.ndarray | None, 
+                       cabin_rgb: np.ndarray | None) -> dict:
+        """Core inference pipeline — routes frames to the correct perception models."""
+        current_time = time.time()
+        
+        # Perception — Drowsiness (driver camera)
+        if driver_rgb is not None and self.drowsiness_processor:
+            try:
+                drowsiness_res = self.drowsiness_processor.process(driver_rgb)
+            except Exception:
+                drowsiness_res = {"drowsiness_available": 0}
+        else:
+            drowsiness_res = {"drowsiness_available": 0}
+            
+        # Perception — State Farm (driver camera)
+        if driver_rgb is not None and self.statefarm_processor:
+            try:
+                statefarm_res = self.statefarm_processor.process(driver_rgb)
+            except Exception:
+                statefarm_res = {"statefarm_available": 0}
+        else:
+            statefarm_res = {"statefarm_available": 0}
+            
+        # Perception — Road Object (road camera)
+        if road_rgb is not None and self.road_object_processor:
+            try:
+                road_obj_res = self.road_object_processor.process(road_rgb)
+            except Exception:
+                road_obj_res = {"road_available": 0}
+        else:
+            road_obj_res = {"road_available": 0}
+            
+        # Perception — Road Geometry (road camera)
+        if road_rgb is not None and self.road_geometry_processor:
+            try:
+                road_geom_res = self.road_geometry_processor.process(road_rgb)
+            except Exception:
+                road_geom_res = {"geometry_available": 0}
+        else:
+            road_geom_res = {"geometry_available": 0}
         
         # Decision
         if self.decision_engine:
@@ -98,7 +152,6 @@ class RealtimePipeline:
                 road_geom_res
             )
         else:
-            # Fallback if engine fails to load
             decision = {
                 "timestamp": current_time,
                 "decision_mode": "DEGRADED",
@@ -113,8 +166,8 @@ class RealtimePipeline:
         # Safety Policy
         decision = self.safety_policy.evaluate(decision)
         
-        # Warning & Logging
-        self.warning_manager.process(decision)
-        self.logger.log(decision, fps)
+        # Warning Message
+        warning_msg = self.warning_manager.process(decision)
+        decision["warning_message"] = warning_msg
         
         return decision
