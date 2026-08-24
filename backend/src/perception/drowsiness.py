@@ -106,16 +106,7 @@ class DrowsinessProcessor:
         self.mouth = [61, 291, 13, 14]
         self.nose = 1
         
-        self.last_result = {
-            "drowsiness_available": 0,
-            "drowsy_prob": 0.0,
-            "not_drowsy_prob": 1.0,
-            "alert_prob": 1.0,
-            "microsleep_prob": 0.0,
-            "yawning_prob": 0.0,
-            "prediction_confidence": 0.0,
-            "state": "alert"
-        }
+        self.last_result = None
 
     def calculate_distance(self, p1, p2):
         return np.linalg.norm(p1 - p2)
@@ -192,16 +183,16 @@ class DrowsinessProcessor:
             if not results.face_landmarks:
                 self.base_buffer.clear()
                 self.feature_buffer.clear()
-                self.last_result["drowsiness_available"] = 0
-                return self.last_result
+                self.last_result = None
+                return {"drowsiness_available": 0}
                 
             h, w, _ = frame_rgb.shape
             face_landmarks = results.face_landmarks[0]
             
             base_features = self.extract_base_features(face_landmarks, w, h)
             if base_features is None:
-                self.last_result["drowsiness_available"] = 0
-                return self.last_result
+                self.last_result = None
+                return {"drowsiness_available": 0}
                 
             self.base_buffer.append(base_features)
             
@@ -224,15 +215,15 @@ class DrowsinessProcessor:
                 self.feature_buffer.append(final_vector)
                 
             if len(self.feature_buffer) < self.sequence_length:
-                self.last_result["drowsiness_available"] = 0
-                return self.last_result
+                self.last_result = None
+                return {"drowsiness_available": 0}
                 
             features = np.array(self.feature_buffer)
             features = (features - self.mean) / self.std
             
             if np.isnan(features).any() or np.isinf(features).any():
-                self.last_result["drowsiness_available"] = 0
-                return self.last_result
+                self.last_result = None
+                return {"drowsiness_available": 0}
                 
             x = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
             
@@ -257,5 +248,5 @@ class DrowsinessProcessor:
             return self.last_result
             
         except Exception as e:
-            self.last_result["drowsiness_available"] = 0
-            return self.last_result
+            self.last_result = None
+            return {"drowsiness_available": 0}

@@ -1,11 +1,12 @@
 import numpy as np
+import torch
 from ultralytics import YOLO
 
 class RoadObjectProcessor:
     def __init__(self, model_path: str, device: str = None):
         try:
+            self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
             self.model = YOLO(model_path)
-            self.device = device if device else "cuda"
             self.model.to(self.device)
         except Exception as e:
             print(f"Failed to load YOLO road object model: {e}")

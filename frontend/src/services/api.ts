@@ -73,4 +73,47 @@ export const ApiService = {
     if (!res.ok) throw new Error(`Video inference failed: ${res.status}`);
     return res.json();
   },
+
+  /**
+   * Start a recording session on the backend.
+   */
+  startRecording: async (sessionName?: string): Promise<any> => {
+    try {
+      const url = sessionName 
+        ? `${BASE_URL}/api/recording/start?session_name=${encodeURIComponent(sessionName)}`
+        : `${BASE_URL}/api/recording/start`;
+      const res = await fetch(url, { method: 'POST' });
+      return res.json();
+    } catch (err) {
+      console.warn('Failed to start backend recording:', err);
+    }
+  },
+
+  /**
+   * Stop recording session and get saved JSON dataset details.
+   */
+  stopRecording: async (): Promise<any> => {
+    try {
+      const res = await fetch(`${BASE_URL}/api/recording/stop`, { method: 'POST' });
+      return res.json();
+    } catch (err) {
+      console.warn('Failed to stop backend recording:', err);
+    }
+  },
+
+  /**
+   * Get latest recorded JSON data payload.
+   */
+  getLatestRecording: async (): Promise<any> => {
+    const res = await fetch(`${BASE_URL}/api/recording/latest`);
+    if (!res.ok) throw new Error('No recorded data available');
+    return res.json();
+  },
+
+  /**
+   * Helper URL for downloading a specific recorded JSON file.
+   */
+  getDownloadUrl: (filename: string): string => {
+    return `${BASE_URL}/api/recording/download/${encodeURIComponent(filename)}`;
+  }
 };

@@ -28,6 +28,8 @@ export function MonitorPage() {
   // Voice indicator
   const [voiceMessage, setVoiceMessage] = useState<string | null>(null)
   const [voiceSeverity, setVoiceSeverity] = useState<string>('SAFE')
+  const [hasRecording, setHasRecording] = useState(false)
+  const [latestFileName, setLatestFileName] = useState<string | null>(null)
 
   // Refs for cleanup
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -122,6 +124,10 @@ export function MonitorPage() {
   // ─── Start Session ──────────────────────────────────────
   const startSession = useCallback(() => {
     setIsRunning(true)
+    setHasRecording(false)
+
+    // Notify backend to start recording dataset
+    ApiService.startRecording().catch(() => {})
 
     // Ensure all file videos are playing (they might be paused)
     document.querySelectorAll('.camera-video').forEach((el) => {
@@ -147,7 +153,7 @@ export function MonitorPage() {
   }, [captureFrame, handleInferResponse])
 
   // ─── Stop Session ───────────────────────────────────────
-  const stopSession = useCallback(() => {
+  const stopSession = useCallback(async () => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current)
       intervalRef.current = null
@@ -162,7 +168,41 @@ export function MonitorPage() {
     voiceAlert.stop()
     setVoiceMessage(null)
     setIsRunning(false)
+
+    // Stop recording on backend and save JSON dataset
+    try {
+      const res = await ApiService.stopRecording()
+      if (res && res.status === 'SAVED') {
+        setHasRecording(true)
+        if (res.filename) setLatestFileName(res.filename)
+      }
+    } catch (err) {
+      console.warn('Error saving recording:', err)
+    }
   }, [])
+
+  // ─── Export / Download JSON Data ────────────────────────
+  const handleExportJson = useCallback(async () => {
+    try {
+      let data
+      if (latestFileName) {
+        window.open(ApiService.getDownloadUrl(latestFileName), '_blank')
+        return
+      }
+      data = await ApiService.getLatestRecording()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `session_record_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '_')}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      alert('Could not export recording JSON: ' + String(err))
+    }
+  }, [latestFileName])
 
   // ─── Cleanup on unmount ─────────────────────────────────
   useEffect(() => {
@@ -251,6 +291,8 @@ export function MonitorPage() {
         canStart={canStart}
         onStart={startSession}
         onStop={stopSession}
+        onExportJson={handleExportJson}
+        hasRecording={hasRecording}
       />
 
       {/* Voice Indicator */}

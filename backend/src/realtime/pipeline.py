@@ -115,10 +115,11 @@ class RealtimePipeline:
         else:
             drowsiness_res = {"drowsiness_available": 0}
             
-        # Perception — State Farm (driver camera)
-        if driver_rgb is not None and self.statefarm_processor:
+        # Perception — State Farm (cabin camera or fallback to driver camera)
+        sf_input = cabin_rgb if cabin_rgb is not None else driver_rgb
+        if sf_input is not None and self.statefarm_processor:
             try:
-                statefarm_res = self.statefarm_processor.process(driver_rgb)
+                statefarm_res = self.statefarm_processor.process(sf_input)
             except Exception:
                 statefarm_res = {"statefarm_available": 0}
         else:
@@ -169,5 +170,13 @@ class RealtimePipeline:
         # Warning Message
         warning_msg = self.warning_manager.process(decision)
         decision["warning_message"] = warning_msg
+        
+        # Attach raw perception inputs for telemetry and dataset recording
+        decision["perception_inputs"] = {
+            "drowsiness": drowsiness_res,
+            "statefarm": statefarm_res,
+            "road_object": road_obj_res,
+            "road_geometry": road_geom_res
+        }
         
         return decision

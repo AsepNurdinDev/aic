@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torchvision import transforms, models
+import hashlib
 
 class StateFarmProcessor:
     def __init__(self, model_path: str, device: str = None):
@@ -35,7 +36,7 @@ class StateFarmProcessor:
                                  std=[0.229, 0.224, 0.225])
         ])
         
-        # Based on typical ImageFolder training (alphabetical)
+        # CRITICAL MODEL CONTRACT
         self.classes = [
             "drinking",
             "normal",
@@ -45,6 +46,7 @@ class StateFarmProcessor:
             "talking_passenger",
             "texting"
         ]
+        self.frame_count = 0
 
     def process(self, frame_rgb: np.ndarray) -> dict:
         try:
@@ -62,6 +64,22 @@ class StateFarmProcessor:
             
             # Distraction is 1.0 - normal_prob
             distraction_prob = 1.0 - prob_dict["normal"]
+            
+            # --- DEBUG ONLY ---
+            img_hash = hashlib.md5(frame_rgb.tobytes()).hexdigest()[:8]
+            print(f"[STATE FARM DEBUG] frame_id: {self.frame_count}")
+            print(f"[STATE FARM DEBUG] image shape: {frame_rgb.shape}, crop shape: {input_tensor.shape}")
+            print(f"[STATE FARM DEBUG] image hash: {img_hash}")
+            print(f"[STATE FARM DEBUG] sf_normal_prob: {prob_dict['normal']}")
+            print(f"[STATE FARM DEBUG] sf_phone_prob: {prob_dict['phone']}")
+            print(f"[STATE FARM DEBUG] sf_texting_prob: {prob_dict['texting']}")
+            print(f"[STATE FARM DEBUG] sf_drinking_prob: {prob_dict['drinking']}")
+            print(f"[STATE FARM DEBUG] sf_radio_prob: {prob_dict['radio']}")
+            print(f"[STATE FARM DEBUG] sf_reaching_prob: {prob_dict['reaching_behind']}")
+            print(f"[STATE FARM DEBUG] sf_passenger_prob: {prob_dict['talking_passenger']}")
+            print(f"--------------------------------------------------")
+            self.frame_count += 1
+            # ------------------
             
             result = {
                 "statefarm_available": 1,

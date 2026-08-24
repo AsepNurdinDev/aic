@@ -71,7 +71,8 @@ class DecisionEngine:
         avail = {
             "drowsiness": drowsiness_res.get("drowsiness_available", 0),
             "statefarm": statefarm_res.get("statefarm_available", 0),
-            "road": 1 if road_obj_res.get("road_available", 0) and road_geom_res.get("geometry_available", 0) else 0
+            "road": road_obj_res.get("road_available", 0),
+            "geometry": road_geom_res.get("geometry_available", 0)
         }
         
         # Road score
@@ -80,14 +81,14 @@ class DecisionEngine:
         # Combine all features matching exactly what the model expects
         current_features = {
             "drowsy_drowsy_prob": drowsiness_res.get("drowsy_prob", 0.0),
-            "drowsy_not_drowsy_prob": drowsiness_res.get("not_drowsy_prob", 1.0),
-            "drowsy_alert_prob": drowsiness_res.get("alert_prob", 1.0),
+            "drowsy_not_drowsy_prob": drowsiness_res.get("not_drowsy_prob", 0.0),
+            "drowsy_alert_prob": drowsiness_res.get("alert_prob", 0.0),
             "drowsy_microsleep_prob": drowsiness_res.get("microsleep_prob", 0.0),
             "drowsy_yawning_prob": drowsiness_res.get("yawning_prob", 0.0),
             "drowsy_prediction_confidence": drowsiness_res.get("prediction_confidence", 0.0),
             
             "sf_drinking_prob": statefarm_res.get("sf_drinking_prob", 0.0),
-            "sf_normal_prob": statefarm_res.get("sf_normal_prob", 1.0),
+            "sf_normal_prob": statefarm_res.get("sf_normal_prob", 0.0),
             "sf_phone_prob": statefarm_res.get("sf_phone_prob", 0.0),
             "sf_radio_prob": statefarm_res.get("sf_radio_prob", 0.0),
             "sf_reaching_prob": statefarm_res.get("sf_reaching_prob", 0.0),
@@ -137,13 +138,14 @@ class DecisionEngine:
             req_mod = self.threshold_mgr.get_required_modality(cfg_name)
             
             # Check availability
-            is_active = False
-            state_str = "INACTIVE"
+            is_active = None
+            state_str = "NOT_OBSERVED"
             
             if req_mod and avail.get(req_mod.replace("_available", ""), 0) == 0:
-                state_str = "UNKNOWN"
+                state_str = "NOT_OBSERVED"
+                is_active = None
             else:
-                is_active = prob >= threshold
+                is_active = bool(prob >= threshold)
                 state_str = "ACTIVE" if is_active else "INACTIVE"
                 
             events_output[event] = {
@@ -154,7 +156,10 @@ class DecisionEngine:
             }
             
         observed_count = sum(1 for e in events_output.values() if e["active"])
-        is_normal = observed_count == 0
+        if decision_mode == "FULL":
+            is_normal = (observed_count == 0)
+        else:
+            is_normal = False if observed_count > 0 else None
         
         return {
             "timestamp": timestamp,

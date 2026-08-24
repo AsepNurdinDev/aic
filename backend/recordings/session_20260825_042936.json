@@ -1,0 +1,55 @@
+{
+  "session_id": "session_20260825_042936",
+  "start_time": "2026-08-25T04:29:36.949241",
+  "end_time": "2026-08-25T04:31:21.321280",
+  "total_frames": 70,
+  "summary": {
+    "severity_counts": {
+      "DEGRADED": 39,
+      "CAUTION": 31
+    },
+    "triggered_actions": {
+      "DEGRADED_WARNING": 39,
+      "ROAD_WARNING": 31
+    },
+    "event_triggers": {
+      "road_risk": 31
+    }
+  },
+  "records": [
+    {
+      "frame_id": 1,
+      "timestamp": 1787603377.322951,
+      "datetime": "2026-08-25T04:29:37.588133",
+      "inputs": {
+        "driver_frame_received": false,
+        "road_frame_received": true,
+        "cabin_frame_received": true,
+        "perception_outputs": {
+          "drowsiness": {
+            "drowsiness_available": 0
+          },
+          "statefarm": {
+            "statefarm_available": 1,
+            "sf_drinking_prob": 0.02943546697497368,
+            "sf_normal_prob": 0.5152043700218201,
+            "sf_phone_prob": 0.08682257682085037,
+            "sf_radio_prob": 0.1404484510421753,
+            "sf_reaching_prob": 0.03790264204144478,
+            "sf_passenger_prob": 0.106351338326931,
+            "sf_texting_prob": 0.08383514732122421,
+            "sf_behavior_max_prob": 0.5152043700218201,
+            "sf_distraction_prob": 0.48479562997817993
+          },
+          "road_object": {
+            "road_available": 1,
+            "object_count": 7,
+            "car_count": 7,
+            "truck_count": 0,
+            "bus_count": 0,
+            "two_wheeler_count": 0,
+            "person_count": 0,
+            "max_object_confidence": 0.9392260313034058,
+            "nearest_object_class": "car",
+            "nearest_object_confidence": 0.7306950688362122,
+            "nearest_object_area_ratio": 

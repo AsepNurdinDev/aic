@@ -12,7 +12,11 @@ class EventSmoother:
         smoothed_events = {}
         
         for event, info in raw_events.items():
-            raw_active = info["active"]
+            raw_active = info.get("active")
+            
+            if raw_active is None:
+                smoothed_events[event] = info.copy()
+                continue
             
             # Initialize counters if not present
             if event not in self.current_state:
@@ -22,16 +26,20 @@ class EventSmoother:
                 
             if raw_active:
                 self.active_consecutive[event] += 1
-                self.inactive_consecutive[event] = 0
+                # Leaky bucket: forgive intermittent noise instead of hard reset
+                self.inactive_consecutive[event] = max(0, self.inactive_consecutive[event] - 1)
             else:
                 self.inactive_consecutive[event] += 1
-                self.active_consecutive[event] = 0
+                # Leaky bucket: forgive intermittent noise instead of hard reset
+                self.active_consecutive[event] = max(0, self.active_consecutive[event] - 1)
                 
             # State transitions
             if not self.current_state[event] and self.active_consecutive[event] >= self.confirm_frames:
                 self.current_state[event] = True
+                self.inactive_consecutive[event] = 0
             elif self.current_state[event] and self.inactive_consecutive[event] >= self.clear_frames:
                 self.current_state[event] = False
+                self.active_consecutive[event] = 0
                 
             # Create a copy and update active state
             smoothed_info = info.copy()
@@ -54,6 +62,9 @@ class DecisionSmoother:
         # Re-evaluate observed count and normality based on smoothed events
         observed_count = sum(1 for e in smoothed_events.values() if e.get("active", False))
         decision["observed_event_count"] = observed_count
-        decision["normal"] = (observed_count == 0)
+        if decision.get("decision_mode") == "FULL":
+            decision["normal"] = (observed_count == 0)
+        else:
+            decision["normal"] = False if observed_count > 0 else None
         
         return decision

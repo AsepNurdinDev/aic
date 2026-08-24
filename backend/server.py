@@ -15,17 +15,19 @@ from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from src.realtime.pipeline import RealtimePipeline
+from src.realtime.recorder import SessionRecorder
 
 
 # ─── Global State ──────────────────────────────────────────────
 pipeline: RealtimePipeline | None = None
+recorder: SessionRecorder = SessionRecorder()
 
 
 # ─── Lifespan ──────────────────────────────────────────────────
@@ -143,7 +145,66 @@ async def infer_frames(req: InferRequest):
         raise HTTPException(status_code=400, detail="No valid frames provided")
     
     decision = pipeline.process_channels(driver_bgr, road_bgr, cabin_bgr)
+    
+    # Record frame input and output data
+    recorder.record_frame(
+        inputs_meta={
+            "driver_frame_received": driver_bgr is not None,
+            "road_frame_received": road_bgr is not None,
+            "cabin_frame_received": cabin_bgr is not None
+        },
+        decision=decision
+    )
+    
     return build_response(decision)
+
+
+# ─── Recording & Data Export Endpoints ─────────────────────────
+
+@app.post("/api/recording/start")
+async def start_recording(session_name: Optional[str] = None):
+    """Start a new recording session."""
+    session_id = recorder.start_session(session_name=session_name)
+    return {
+        "status": "RECORDING_STARTED",
+        "session_id": session_id,
+        "start_time": recorder.start_time
+    }
+
+
+@app.post("/api/recording/stop")
+async def stop_recording():
+    """Stop current recording session and generate JSON dataset file."""
+    result = recorder.stop_session()
+    return result
+
+
+@app.get("/api/recording/latest")
+async def get_latest_recording():
+    """Get or download latest recorded JSON data."""
+    data = recorder.get_latest_data()
+    if not data:
+        raise HTTPException(status_code=404, detail="No recorded data found")
+    return JSONResponse(data)
+
+
+@app.get("/api/recording/download/{filename}")
+async def download_recording(filename: str):
+    """Download saved JSON recording dataset file."""
+    filepath = recorder.output_dir / filename
+    if not filepath.exists() or not filepath.is_file():
+        raise HTTPException(status_code=404, detail="Recording file not found")
+    return FileResponse(
+        path=str(filepath),
+        filename=filename,
+        media_type="application/json"
+    )
+
+
+@app.get("/api/recording/list")
+async def list_recordings():
+    """List all saved session JSON files."""
+    return {"recordings": recorder.list_saved_sessions()}
 
 
 @app.post("/api/infer/video")

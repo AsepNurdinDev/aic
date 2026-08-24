@@ -5,14 +5,38 @@
 
 class VoiceAlertService {
   private lastAction: string = 'NONE';
-  private lastPlayTime: number = 0;
-  private cooldownMs: number = 6000;
+
+  // Cooldown antar peringatan yang SAMA (jeda sebelum peringatan yang sama boleh bunyi lagi)
+  private actionCooldowns: Record<string, number> = {
+    'DROWSINESS_WARNING': 10000, // 10 detik jeda untuk drowsiness
+    'ROAD_WARNING': 8000,        // 8 detik
+    'URGENT_WARNING': 5000,      // 5 detik (lebih sering karena urgent)
+    'DEGRADED_WARNING': 15000,   // 15 detik
+    'DEFAULT': 6000
+  };
+
+  // Delay/waktu tunggu sebelum peringatan diputar sejak pertama kali terdeteksi (0 ms = langsung bunyi)
+  private actionDelays: Record<string, number> = {
+    'DROWSINESS_WARNING': 0, // Langsung bunyi tanpa delay
+    'ROAD_WARNING': 0,       // Langsung bunyi tanpa delay
+    'URGENT_WARNING': 0,     // Langsung bunyi tanpa delay
+    'DEGRADED_WARNING': 0,   // Langsung bunyi tanpa delay
+    'DEFAULT': 0             // Langsung bunyi tanpa delay
+  };
+
+  private lastPlayTimes: Record<string, number> = {};
+  private conditionStartTimes: Record<string, number> = {};
+  
+  // Cooldown global agar peringatan yang berbeda tidak berbunyi bersamaan atau berurutan cepat
+  private globalCooldownMs: number = 3000; 
+  private lastGlobalPlayTime: number = 0;
+
   private currentAudio: HTMLAudioElement | null = null;
 
   // Mapping action backend ke file audio lokal di folder /public/audio/
   private audioMap: Record<string, string> = {
     'DROWSINESS_WARNING': '/audio/drowsiness.mp3',
-    'DISTRACTION_WARNING': '/audio/distraction.mp3',
+    // 'DISTRACTION_WARNING': '/audio/distraction.mp3',
     'ROAD_WARNING': '/audio/road_warning.mp3',
     'URGENT_WARNING': '/audio/urgent.mp3',
     'DEGRADED_WARNING': '/audio/warning.mp3',
@@ -23,19 +47,47 @@ class VoiceAlertService {
    * Returns true if voice was played.
    */
   processResponse(warningMessage: string | null, action: string): boolean {
+    const now = Date.now();
+
     if (!warningMessage || action === 'NONE') {
-      this.lastAction = action;
+      if (this.lastAction !== 'NONE') {
+        this.lastAction = 'NONE';
+      }
       return false;
     }
 
-    const now = Date.now();
-    const actionChanged = action !== this.lastAction;
-    const cooldownExpired = (now - this.lastPlayTime) > this.cooldownMs;
-
-    if (actionChanged || cooldownExpired) {
-      this.playLocalAudio(action, warningMessage);
+    // Jika deteksi kondisi baru (atau berubah dari sebelumnya)
+    if (action !== this.lastAction) {
       this.lastAction = action;
-      this.lastPlayTime = now;
+      // Hanya reset waktu mulai jika sebelumnya belum ada catatan untuk aksi ini
+      // atau jika sudah lama tidak terdeteksi (misal lebih dari 5 detik)
+      const lastStart = this.conditionStartTimes[action] || 0;
+      if (now - lastStart > 5000) {
+        this.conditionStartTimes[action] = now;
+      }
+    }
+
+    // 1. Cek Delay (apakah kondisi sudah bertahan cukup lama?)
+    const requiredDelay = this.actionDelays[action] ?? this.actionDelays['DEFAULT'];
+    const startTime = this.conditionStartTimes[action] || now;
+    const hasPassedDelay = (now - startTime) >= requiredDelay;
+
+    // 2. Cek Cooldown untuk Aksi ini (apakah sudah cukup lama sejak terakhir kali bunyi?)
+    const actionCooldown = this.actionCooldowns[action] ?? this.actionCooldowns['DEFAULT'];
+    const lastPlayed = this.lastPlayTimes[action] || 0;
+    const hasPassedActionCooldown = (now - lastPlayed) > actionCooldown;
+
+    // 3. Cek Global Cooldown (apakah tidak bertumpuk dengan peringatan lain?)
+    const hasPassedGlobalCooldown = (now - this.lastGlobalPlayTime) > this.globalCooldownMs;
+
+    if (hasPassedDelay && hasPassedActionCooldown && hasPassedGlobalCooldown) {
+      this.playLocalAudio(action, warningMessage);
+      
+      this.lastPlayTimes[action] = now;
+      this.lastGlobalPlayTime = now;
+      
+      // Update start time agar jika kondisinya terus bertahan, akan menunggu cooldown
+      this.conditionStartTimes[action] = now;
       return true;
     }
 
