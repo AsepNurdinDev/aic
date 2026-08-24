@@ -4,31 +4,26 @@ import { SessionControls } from '../components/SessionControls'
 import { ApiService, InferResponse } from '../services/api'
 import { voiceAlert } from '../services/voiceAlert'
 
-type SessionMode = 'live' | 'demo'
+type PanelState = {
+  sourceType: 'none' | 'file' | 'device'
+  deviceId?: string
+  file?: File
+  url?: string
+  stream?: MediaStream
+}
 
 /**
- * MonitorPage — the only page in the app.
- * 3 camera panels + session controls + voice-only output.
- * No dashboard, no analytics, no text display of AI results.
+ * MonitorPage — Unified live & demo processing.
  */
 export function MonitorPage() {
   // ─── State ──────────────────────────────────────────────
-  const [mode, setMode] = useState<SessionMode>('demo')
   const [isRunning, setIsRunning] = useState(false)
   const [backendOnline, setBackendOnline] = useState(false)
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
 
-  // Demo files
-  const [driverFile, setDriverFile] = useState<File | null>(null)
-  const [roadFile, setRoadFile] = useState<File | null>(null)
-  const [cabinFile, setCabinFile] = useState<File | null>(null)
-
-  // Video sources (object URLs for demo, MediaStreams for live)
-  const [driverVideoSrc, setDriverVideoSrc] = useState<string>('')
-  const [roadVideoSrc, setRoadVideoSrc] = useState<string>('')
-  const [cabinVideoSrc, setCabinVideoSrc] = useState<string>('')
-
-  // Live streams
-  const [driverStream, setDriverStream] = useState<MediaStream | null>(null)
+  const [driverState, setDriverState] = useState<PanelState>({ sourceType: 'none' })
+  const [roadState, setRoadState] = useState<PanelState>({ sourceType: 'none' })
+  const [cabinState, setCabinState] = useState<PanelState>({ sourceType: 'none' })
 
   // Voice indicator
   const [voiceMessage, setVoiceMessage] = useState<string | null>(null)
@@ -36,11 +31,10 @@ export function MonitorPage() {
 
   // Refs for cleanup
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const driverVideoRef = useRef<HTMLVideoElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const voiceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // ─── Health Check ───────────────────────────────────────
+  // ─── Init Devices & Health ──────────────────────────────
   useEffect(() => {
     const checkHealth = async () => {
       const health = await ApiService.getHealth()
@@ -48,11 +42,51 @@ export function MonitorPage() {
     }
     checkHealth()
     const hInterval = setInterval(checkHealth, 10000)
+
+    const initDevices = async () => {
+      try {
+        // Request permission to get labels
+        await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        const devs = await navigator.mediaDevices.enumerateDevices()
+        setDevices(devs.filter(d => d.kind === 'videoinput'))
+      } catch (err) {
+        console.warn('Could not enumerate devices', err)
+      }
+    }
+    initDevices()
+
     return () => clearInterval(hInterval)
   }, [])
 
+  // ─── Source Selection Logic ─────────────────────────────
+  const cleanupPanel = (state: PanelState) => {
+    if (state.stream) state.stream.getTracks().forEach(t => t.stop())
+    if (state.url) URL.revokeObjectURL(state.url)
+  }
+
+  const handleDeviceSelect = async (deviceId: string, setState: (s: PanelState) => void, oldState: PanelState) => {
+    cleanupPanel(oldState)
+    if (deviceId === 'none') {
+      setState({ sourceType: 'none' })
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } })
+      setState({ sourceType: 'device', deviceId, stream })
+    } catch (err) {
+      console.error('Failed to start device', err)
+      setState({ sourceType: 'none' })
+    }
+  }
+
+  const handleFileSelect = (file: File, setState: (s: PanelState) => void, oldState: PanelState) => {
+    cleanupPanel(oldState)
+    setState({ sourceType: 'file', file, url: URL.createObjectURL(file) })
+  }
+
   // ─── Capture frame from video element ───────────────────
-  const captureFrame = useCallback((videoEl: HTMLVideoElement | null): string | null => {
+  const captureFrame = useCallback((videoId: string): string | null => {
+    const videoEl = document.querySelector(`#${videoId} video`) as HTMLVideoElement
     if (!videoEl || videoEl.readyState < 2) return null
 
     if (!canvasRef.current) {
@@ -85,126 +119,62 @@ export function MonitorPage() {
     }
   }, [])
 
-  // ─── Start Live Session ─────────────────────────────────
-  const startLive = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: 640, height: 480 }
-      })
-      setDriverStream(stream)
-
-      // Create a hidden video element for frame capture
-      const video = document.createElement('video')
-      video.srcObject = stream
-      video.muted = true
-      video.playsInline = true
-      await video.play()
-      driverVideoRef.current = video
-
-      setIsRunning(true)
-
-      // Send frames at ~3 FPS
-      intervalRef.current = setInterval(async () => {
-        const frame = captureFrame(driverVideoRef.current)
-        if (!frame) return
-
-        try {
-          const res = await ApiService.inferFrames(frame, null, null)
-          handleInferResponse(res)
-        } catch {
-          // Silently ignore inference errors
-        }
-      }, 333)
-    } catch (err) {
-      console.error('Camera access denied:', err)
-    }
-  }, [captureFrame, handleInferResponse])
-
-  // ─── Start Demo Session ─────────────────────────────────
-  const startDemo = useCallback(async () => {
-    // Create object URLs for the video panels
-    if (driverFile) setDriverVideoSrc(URL.createObjectURL(driverFile))
-    if (roadFile) setRoadVideoSrc(URL.createObjectURL(roadFile))
-    if (cabinFile) setCabinVideoSrc(URL.createObjectURL(cabinFile))
-
+  // ─── Start Session ──────────────────────────────────────
+  const startSession = useCallback(() => {
     setIsRunning(true)
 
-    // Send video files to backend for batch inference
-    try {
-      const res = await ApiService.inferVideo(driverFile, roadFile, cabinFile)
-      
-      // Play the final warning if any
-      if (res.warning_message) {
-        handleInferResponse({
-          warning_message: res.warning_message,
-          decision: res.decision,
-        })
-      }
+    // Ensure all file videos are playing (they might be paused)
+    document.querySelectorAll('.camera-video').forEach((el) => {
+      const vid = el as HTMLVideoElement
+      vid.play().catch(() => {})
+    })
 
-      // Also play any intermediate events
-      if (res.events && Array.isArray(res.events)) {
-        for (const evt of res.events) {
-          if (evt.warning_message) {
-            // Small delay between messages to allow TTS to finish
-            await new Promise(resolve => setTimeout(resolve, 2000))
-            handleInferResponse({
-              warning_message: evt.warning_message,
-              decision: evt.decision,
-            })
-          }
-        }
+    // Send frames at ~3 FPS
+    intervalRef.current = setInterval(async () => {
+      const driverFrame = captureFrame('panel-driver')
+      const roadFrame = captureFrame('panel-road')
+      const cabinFrame = captureFrame('panel-cabin')
+
+      if (!driverFrame && !roadFrame && !cabinFrame) return
+
+      try {
+        const res = await ApiService.inferFrames(driverFrame, roadFrame, cabinFrame)
+        handleInferResponse(res)
+      } catch {
+        // Silently ignore inference errors to keep streaming
       }
-    } catch (err) {
-      console.error('Demo inference error:', err)
-    }
-  }, [driverFile, roadFile, cabinFile, handleInferResponse])
+    }, 333)
+  }, [captureFrame, handleInferResponse])
 
   // ─── Stop Session ───────────────────────────────────────
   const stopSession = useCallback(() => {
-    // Stop interval
     if (intervalRef.current) {
       clearInterval(intervalRef.current)
       intervalRef.current = null
     }
 
-    // Stop camera stream
-    if (driverStream) {
-      driverStream.getTracks().forEach(t => t.stop())
-      setDriverStream(null)
-    }
-    if (driverVideoRef.current) {
-      driverVideoRef.current.pause()
-      driverVideoRef.current.srcObject = null
-      driverVideoRef.current = null
-    }
+    // Pause all videos
+    document.querySelectorAll('.camera-video').forEach((el) => {
+      const vid = el as HTMLVideoElement
+      vid.pause()
+    })
 
-    // Revoke object URLs
-    if (driverVideoSrc) URL.revokeObjectURL(driverVideoSrc)
-    if (roadVideoSrc) URL.revokeObjectURL(roadVideoSrc)
-    if (cabinVideoSrc) URL.revokeObjectURL(cabinVideoSrc)
-    setDriverVideoSrc('')
-    setRoadVideoSrc('')
-    setCabinVideoSrc('')
-
-    // Stop voice
     voiceAlert.stop()
     setVoiceMessage(null)
-
     setIsRunning(false)
-  }, [driverStream, driverVideoSrc, roadVideoSrc, cabinVideoSrc])
+  }, [])
 
   // ─── Cleanup on unmount ─────────────────────────────────
   useEffect(() => {
     return () => {
       stopSession()
+      cleanupPanel(driverState)
+      cleanupPanel(roadState)
+      cleanupPanel(cabinState)
     }
-  }, [])
+  }, []) // empty dep array is fine for unmount cleanup in this case (uses ref for stopSession)
 
-  // ─── Start handler ──────────────────────────────────────
-  const handleStart = () => {
-    if (mode === 'live') startLive()
-    else startDemo()
-  }
+  const canStart = driverState.sourceType !== 'none' || roadState.sourceType !== 'none' || cabinState.sourceType !== 'none'
 
   // ─── Render ─────────────────────────────────────────────
   return (
@@ -226,39 +196,64 @@ export function MonitorPage() {
       {/* Camera Grid */}
       <div className="camera-grid">
         <CameraPanel
+          id="panel-driver"
           label="Driver"
           active={isRunning}
-          videoSrc={driverVideoSrc || undefined}
-          stream={driverStream}
+          videoSrc={driverState.url}
+          stream={driverState.stream}
+          selector={
+            <SourceSelector 
+              value={driverState.sourceType === 'device' ? (driverState.deviceId || 'none') : (driverState.sourceType === 'file' ? 'file' : 'none')}
+              devices={devices}
+              disabled={isRunning}
+              onSelectDevice={(id) => handleDeviceSelect(id, setDriverState, driverState)}
+              onSelectFile={(f) => handleFileSelect(f, setDriverState, driverState)}
+            />
+          }
         />
         <CameraPanel
+          id="panel-road"
           label="Road"
           active={isRunning}
-          videoSrc={roadVideoSrc || undefined}
+          videoSrc={roadState.url}
+          stream={roadState.stream}
+          selector={
+            <SourceSelector 
+              value={roadState.sourceType === 'device' ? (roadState.deviceId || 'none') : (roadState.sourceType === 'file' ? 'file' : 'none')}
+              devices={devices}
+              disabled={isRunning}
+              onSelectDevice={(id) => handleDeviceSelect(id, setRoadState, roadState)}
+              onSelectFile={(f) => handleFileSelect(f, setRoadState, roadState)}
+            />
+          }
         />
         <CameraPanel
+          id="panel-cabin"
           label="Cabin"
           active={isRunning}
-          videoSrc={cabinVideoSrc || undefined}
+          videoSrc={cabinState.url}
+          stream={cabinState.stream}
+          selector={
+            <SourceSelector 
+              value={cabinState.sourceType === 'device' ? (cabinState.deviceId || 'none') : (cabinState.sourceType === 'file' ? 'file' : 'none')}
+              devices={devices}
+              disabled={isRunning}
+              onSelectDevice={(id) => handleDeviceSelect(id, setCabinState, cabinState)}
+              onSelectFile={(f) => handleFileSelect(f, setCabinState, cabinState)}
+            />
+          }
         />
       </div>
 
       {/* Controls */}
       <SessionControls
-        mode={mode}
-        onModeChange={setMode}
         isRunning={isRunning}
-        onStart={handleStart}
+        canStart={canStart}
+        onStart={startSession}
         onStop={stopSession}
-        driverFile={driverFile}
-        roadFile={roadFile}
-        cabinFile={cabinFile}
-        onDriverFile={setDriverFile}
-        onRoadFile={setRoadFile}
-        onCabinFile={setCabinFile}
       />
 
-      {/* Voice Indicator — transient, appears only when AI speaks */}
+      {/* Voice Indicator */}
       {voiceMessage && (
         <div className={`voice-indicator ${voiceSeverity === 'CRITICAL' ? 'critical' : 'warning'}`}>
           <SpeakerIcon severity={voiceSeverity} />
@@ -266,6 +261,62 @@ export function MonitorPage() {
         </div>
       )}
     </div>
+  )
+}
+
+/* ─── Source Selector Component ────────────────────────── */
+function SourceSelector({ 
+  value, 
+  devices,
+  disabled,
+  onSelectDevice,
+  onSelectFile
+}: {
+  value: string
+  devices: MediaDeviceInfo[]
+  disabled: boolean
+  onSelectDevice: (deviceId: string) => void
+  onSelectFile: (file: File) => void
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  
+  const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value
+    if (val === 'file') {
+      fileInputRef.current?.click()
+    } else {
+      onSelectDevice(val)
+    }
+  }
+  
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      onSelectFile(file)
+    }
+    // reset input so the same file can be selected again if needed
+    e.target.value = ''
+  }
+
+  return (
+    <>
+      <select className="camera-source-select" value={value} onChange={handleChange} disabled={disabled}>
+        <option value="none">None</option>
+        <option value="file">File Video...</option>
+        {devices.map(d => (
+          <option key={d.deviceId} value={d.deviceId}>
+            {d.label || `Camera ${d.deviceId.substring(0, 5)}`}
+          </option>
+        ))}
+      </select>
+      <input 
+        type="file" 
+        accept="video/*" 
+        ref={fileInputRef} 
+        className="file-input-hidden" 
+        onChange={handleFileChange} 
+      />
+    </>
   )
 }
 
