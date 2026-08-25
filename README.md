@@ -63,8 +63,8 @@ Alur kerja (Pipeline):
 
 1. **Clone repositori dan tarik model ML (Git LFS)**
    ```bash
-   git clone https://github.com/username/fleetsense.git
-   cd fleetsense
+   https://github.com/AsepNurdinDev/aic.git
+   cd aic
    git lfs install
    git lfs pull
    ```
