@@ -19,8 +19,7 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 
-# AI models
-backend/models/
+
 
 # Videos
 videos/
