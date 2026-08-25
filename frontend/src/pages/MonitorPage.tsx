@@ -222,7 +222,7 @@ export function MonitorPage() {
       {/* Header */}
       <header className="header">
         <div className="header-brand">
-          <div className="header-logo">SR</div>
+          <div className="header-logo">FS</div>
           <h1 className="header-title">FleetSense AI</h1>
         </div>
         <div className="header-status">
