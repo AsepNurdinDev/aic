@@ -1,0 +1,82 @@
+{
+  "event_drowsiness": {
+    "display_name": "DROWSINESS",
+    "candidate": "xgb_deep",
+    "threshold": 0.05,
+    "validation_pooled_f1": 0.9960959286112661,
+    "validation_mean_pattern_f1": 0.996080627099664,
+    "validation_worst_pattern_f1": 0.9921612541993281,
+    "validation_champion_score": 0.9949048152295632,
+    "required_modality": "drowsiness_available"
+  },
+  "event_phone_use": {
+    "display_name": "PHONE_USE",
+    "candidate": "xgb_conservative",
+    "threshold": 0.91,
+    "validation_pooled_f1": 0.9979550102249489,
+    "validation_mean_pattern_f1": 0.9979550102249489,
+    "validation_worst_pattern_f1": 0.9979550102249489,
+    "validation_champion_score": 0.9979550102249488,
+    "required_modality": "statefarm_available"
+  },
+  "event_texting": {
+    "display_name": "TEXTING",
+    "candidate": "xgb_balanced",
+    "threshold": 0.4,
+    "validation_pooled_f1": 0.9968652037617555,
+    "validation_mean_pattern_f1": 0.9968652037617555,
+    "validation_worst_pattern_f1": 0.9968652037617555,
+    "validation_champion_score": 0.9968652037617554,
+    "required_modality": "statefarm_available"
+  },
+  "event_drinking": {
+    "display_name": "DRINKING",
+    "candidate": "xgb_conservative",
+    "threshold": 0.19,
+    "validation_pooled_f1": 0.9984301412872841,
+    "validation_mean_pattern_f1": 0.9984301412872841,
+    "validation_worst_pattern_f1": 0.9984301412872841,
+    "validation_champion_score": 0.998430141287284,
+    "required_modality": "statefarm_available"
+  },
+  "event_radio_operation": {
+    "display_name": "RADIO_OPERATION",
+    "candidate": "xgb_conservative",
+    "threshold": 0.05,
+    "validation_pooled_f1": 0.9882352941176471,
+    "validation_mean_pattern_f1": 0.9882352941176471,
+    "validation_worst_pattern_f1": 0.9882352941176471,
+    "validation_champion_score": 0.9882352941176471,
+    "required_modality": "statefarm_available"
+  },
+  "event_reaching_behind": {
+    "display_name": "REACHING_BEHIND",
+    "candidate": "xgb_conservative",
+    "threshold": 0.4,
+    "validation_pooled_f1": 0.9968553459119497,
+    "validation_mean_pattern_f1": 0.9968553459119497,
+    "validation_worst_pattern_f1": 0.9968553459119497,
+    "validation_champion_score": 0.9968553459119497,
+    "required_modality": "statefarm_available"
+  },
+  "event_talking_passenger": {
+    "display_name": "TALKING_PASSENGER",
+    "candidate": "xgb_deep",
+    "threshold": 0.47,
+    "validation_pooled_f1": 0.9585253456221198,
+    "validation_mean_pattern_f1": 0.9585253456221198,
+    "validation_worst_pattern_f1": 0.9585253456221198,
+    "validation_champion_score": 0.9585253456221197,
+    "required_modality": "statefarm_available"
+  },
+  "event_road_risk": {
+    "display_name": "ROAD_RISK",
+    "candidate": "xgb_conservative",
+    "threshold": 0.05,
+    "validation_pooled_f1": 1.0,
+    "validation_mean_pattern_f1": 1.0,
+    "validation_worst_pattern_f1": 1.0,
+    "validation_champion_score": 1.0,
+    "required_modality": "road_available"
+  }
+}

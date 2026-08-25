@@ -1,0 +1,21 @@
+{
+  "FULL_MODE": {
+    "all_modalities_required": true,
+    "severity": {
+      "0_events": "SAFE",
+      "1_event": "CAUTION",
+      "2_events": "HIGH",
+      "3_or_more": "CRITICAL"
+    },
+    "critical_action": "URGENT_WARNING"
+  },
+  "DEGRADED_MODE": {
+    "all_modalities_required": false,
+    "zero_observed_events": "DEGRADED",
+    "one_observed_event": "CAUTION",
+    "two_observed_events": "HIGH",
+    "three_or_more": "CRITICAL",
+    "zero_observed_action": "DEGRADED_WARNING"
+  },
+  "false_safe_policy": "Do not interpret missing modality as negative evidence."
+}
