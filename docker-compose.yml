@@ -11,6 +11,8 @@ services:
 
     volumes:
       - ./backend:/app
+      - ./.git:/app/.git
+      - ./.gitattributes:/app/.gitattributes
 
       # Prevent host virtual environment from
       # overriding container Python environment

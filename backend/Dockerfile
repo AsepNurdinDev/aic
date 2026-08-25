@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     && git lfs install \
+    && git config --global --add safe.directory "*" \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -21,9 +22,6 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . .
 
-# Tarik file LFS jika repository git terdeteksi
-RUN if [ -d ".git" ]; then git lfs pull; fi
-
 EXPOSE 8000
 
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "git lfs pull || true && uvicorn server:app --host 0.0.0.0 --port 8000"]
