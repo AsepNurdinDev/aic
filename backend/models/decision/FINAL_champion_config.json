@@ -2,7 +2,7 @@
   "event_drowsiness": {
     "display_name": "DROWSINESS",
     "candidate": "xgb_deep",
-    "threshold": 0.05,
+    "threshold": 0.65,
     "validation_pooled_f1": 0.9960959286112661,
     "validation_mean_pattern_f1": 0.996080627099664,
     "validation_worst_pattern_f1": 0.9921612541993281,
@@ -42,7 +42,7 @@
   "event_radio_operation": {
     "display_name": "RADIO_OPERATION",
     "candidate": "xgb_conservative",
-    "threshold": 0.05,
+    "threshold": 0.60,
     "validation_pooled_f1": 0.9882352941176471,
     "validation_mean_pattern_f1": 0.9882352941176471,
     "validation_worst_pattern_f1": 0.9882352941176471,
@@ -72,7 +72,7 @@
   "event_road_risk": {
     "display_name": "ROAD_RISK",
     "candidate": "xgb_conservative",
-    "threshold": 0.05,
+    "threshold": 0.65,
     "validation_pooled_f1": 1.0,
     "validation_mean_pattern_f1": 1.0,
     "validation_worst_pattern_f1": 1.0,
