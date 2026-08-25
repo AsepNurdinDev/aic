@@ -19,8 +19,10 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 
-# AI models
-backend/models/
+
 
 # Videos
 videos/
+# Recordings & Logs
+backend/recordings/*.json
+!backend/recordings/.gitkeep
