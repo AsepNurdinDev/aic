@@ -23,3 +23,6 @@ Thumbs.db
 
 # Videos
 videos/
+# Recordings & Logs
+backend/recordings/*.json
+!backend/recordings/.gitkeep

@@ -4,7 +4,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+import numpy as np
 
+class NpEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NpEncoder, self).default(obj)
 RECORDINGS_DIR = Path(__file__).resolve().parent.parent.parent / "recordings"
 
 class SessionRecorder:
@@ -107,7 +117,7 @@ class SessionRecorder:
         filepath = self.output_dir / filename
         
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
+            json.dump(payload, f, indent=2, ensure_ascii=False, cls=NpEncoder)
 
         self.latest_saved_file = filepath
         self.is_recording = False
