@@ -222,8 +222,8 @@ export function MonitorPage() {
       {/* Header */}
       <header className="header">
         <div className="header-brand">
-          <div className="header-logo">SR</div>
-          <h1 className="header-title">SafeRoute AI</h1>
+          <div className="header-logo">FS</div>
+          <h1 className="header-title">FleetSense AI</h1>
         </div>
         <div className="header-status">
           <span className={`status-dot ${backendOnline ? 'online' : 'offline'}`} />
